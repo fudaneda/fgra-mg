@@ -1,0 +1,37 @@
+[
+  {
+    "class":"firrtl.EmitCircuitAnnotation",
+    "emitter":"firrtl.VerilogEmitter"
+  },
+  {
+    "class":"firrtl.transforms.BlackBoxTargetDirAnno",
+    "targetDir":"."
+  },
+  {
+    "class":"firrtl.transforms.CombinationalPath",
+    "sink":"~SharedDelayPipe|SharedDelayPipe>io_out_1",
+    "sources":[
+      "~SharedDelayPipe|SharedDelayPipe>io_in_1",
+      "~SharedDelayPipe|SharedDelayPipe>io_en",
+      "~SharedDelayPipe|SharedDelayPipe>io_config"
+    ]
+  },
+  {
+    "class":"firrtl.transforms.CombinationalPath",
+    "sink":"~SharedDelayPipe|SharedDelayPipe>io_out_2",
+    "sources":[
+      "~SharedDelayPipe|SharedDelayPipe>io_in_2",
+      "~SharedDelayPipe|SharedDelayPipe>io_en",
+      "~SharedDelayPipe|SharedDelayPipe>io_config"
+    ]
+  },
+  {
+    "class":"firrtl.transforms.CombinationalPath",
+    "sink":"~SharedDelayPipe|SharedDelayPipe>io_out_0",
+    "sources":[
+      "~SharedDelayPipe|SharedDelayPipe>io_in_0",
+      "~SharedDelayPipe|SharedDelayPipe>io_en",
+      "~SharedDelayPipe|SharedDelayPipe>io_config"
+    ]
+  }
+]
