@@ -126,7 +126,39 @@
     "accumulative" : 1,
     "numOperands" : 1,
     "numRes" : 1,
-    "OPC" : 17
+    "OPC" : 33
+  }, {
+    "name" : "CACC",
+    "commutative" : 0,
+    "latency" : 1,
+    "accumulative" : 1,
+    "numOperands" : 2,
+    "numRes" : 1,
+    "OPC" : 65
+  }, {
+    "name" : "PASS_CF",
+    "commutative" : 0,
+    "latency" : 1,
+    "accumulative" : 0,
+    "numOperands" : 1,
+    "numRes" : 2,
+    "OPC" : 15
+  }, {
+    "name" : "ZEXT",
+    "commutative" : 0,
+    "latency" : 1,
+    "accumulative" : 0,
+    "numOperands" : 3,
+    "numRes" : 1,
+    "OPC" : 16
+  }, {
+    "name" : "ISEL",
+    "commutative" : 0,
+    "latency" : 1,
+    "accumulative" : -1,
+    "numOperands" : 2,
+    "numRes" : 1,
+    "OPC" : 160
   }, {
     "name" : "INPUT",
     "commutative" : 0,
@@ -223,5 +255,13 @@
     "numOperands" : 4,
     "numRes" : 0,
     "OPC" : 11
+  }, {
+    "name" : "LUT",
+    "commutative" : 0,
+    "latency" : 1,
+    "accumulative" : 0,
+    "numOperands" : 3,
+    "numRes" : 1,
+    "OPC" : 0
   } ]
 }

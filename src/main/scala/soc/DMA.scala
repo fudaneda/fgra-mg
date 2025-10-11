@@ -687,9 +687,21 @@ class DMAWriteImp(outer:DMAWriteController)(lgMaxDataLen: Int, dataWidth: Int, h
     when(edge.done(tl.a)){
       tl_id := Mux(tl_id < (nReqInflight-1).U, tl_id + 1.U, 0.U )
     }
-    val mask = RegInit(0.U(dataByte.W))
-    mask := Mux(lgLen_align >= log2Ceil(dataByte).U, ((1 << dataByte) - 1).U,
-                (1.U << (1.U << lgLen_align).asUInt).asUInt - 1.U)
+    // Generate a byte mask aligned to the TL address low bits.
+    // For sizes >= beatBytes, the mask should be full; for narrower writes,
+    // shift the base mask by the address offset within the beat.
+    val baseMask = Mux(
+      lgLen_align >= log2Ceil(dataByte).U,
+      ((1 << dataByte) - 1).U,
+      (1.U << (1.U << lgLen_align).asUInt).asUInt - 1.U
+    )
+    val mask = Wire(UInt(dataByte.W))
+    if (dataByte == 1) {
+      mask := baseMask(0, 0)
+    } else {
+      val addrShift = paddr(log2Ceil(dataByte) - 1, 0)
+      mask := (baseMask << addrShift)(dataByte - 1, 0)
+    }
     tl.a.valid := (state === s_dma_req) && (io.write.stream.valid || isDataInvalid)
     tl.a.bits := edge.Put(
       fromSource = tl_id,

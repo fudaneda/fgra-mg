@@ -5,7 +5,7 @@ version := "1.0.0"
 
 name := "FGRAMem-MG"
 
-scalaVersion := "2.13.1" // "2.13.8"
+scalaVersion := "2.13.7" // "2.13.8"
 
 scalacOptions ++= Seq(
   "-language:reflectiveCalls",

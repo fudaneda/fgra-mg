@@ -16,9 +16,9 @@ object FusionParam {
   val dumpOperationSet : Boolean = true
   val dumpADG : Boolean = true
   val rootDirPath = (new File("")).getAbsolutePath()
-  val fusion_spec_filename = rootDirPath + "/generators/fusion_mem/fgra-mg/src/main/resources/fusion_spec.json"
-  val operation_set_filename = rootDirPath + "/generators/fusion_mem/fgra-mg/src/main/resources/operations.json"
-  val fgra_adg_filename = rootDirPath + "/generators/fusion_mem/fgra-mg/src/main/resources/fgra_adg.json"
+  val fusion_spec_filename = rootDirPath + "/generators/fgra/fgra-mg/src/main/resources/fusion_spec.json"
+  val operation_set_filename = rootDirPath + "/generators/fgra/fgra-mg/src/main/resources/operations.json"
+  val fgra_adg_filename = rootDirPath + "/generators/fgra/fgra-mg/src/main/resources/fgra_adg.json"
 }
 
 class FusionMem(opcodes: OpcodeSet)(implicit p: Parameters) extends LazyRoCC(opcodes, nPTWPorts = 1) {
