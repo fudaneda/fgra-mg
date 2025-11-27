@@ -45,7 +45,7 @@ class GPE(attrs: mutable.Map[String, Any]) extends Module with IR {
   val numACCOperandFG = ops.map(OpInfo.getAccFGOperand(_)).max
 //  println("numACCOperandFG: " + numACCOperandFG)
   val noLUTOperandFG = aluOperandFG + numACCOperandFG // fine-grain inputs without connect to LUT (SEL/CACC/CIACC control signal)
-  println("noLUTOperandFG: " + noLUTOperandFG)
+  // println("noLUTOperandFG: " + noLUTOperandFG)
   val numOperandFG = aluOperandFG + numInLut + numACCOperandFG // ALU+LUT+ACC_ctrl
   val numOutFG = aluOutFG + {if (numInLut > 0) 1 else 0} // ALU+LUT
   // number of inputs per coarse-grained internal input
@@ -70,7 +70,12 @@ class GPE(attrs: mutable.Map[String, Any]) extends Module with IR {
   }.reduce(_ | _) // has conditional (reset) accumulate operations
   val hasCondDualInitAcc = ops.map { op =>
     OpInfo.CondDualInitAccOpInfoMap.contains(op)
-  }.reduce(_ | _)
+  }.reduce(_ | _)  
+  val hasMAC = ops.map { op =>
+    op == "MAC" || op == "CMAC"
+  }.reduce(_ | _)  
+  assert((hasMAC && hasAcc) || !hasMAC) //@yuan: make sure that having MAC operation must with ACC operation
+  val extraALUInput = if(hasMAC) 1 else 0
   val useDMR = hasAcc || hasISel
   val useDualDMRInput = hasCondDualInitAcc || hasISel
 //  println("hasCondDualInitAcc: " + hasCondDualInitAcc)
@@ -300,23 +305,54 @@ class GPE(attrs: mutable.Map[String, Any]) extends Module with IR {
         connections.append((smi_id("DelayPipeCG")(0), "DelayPipeCG", i, smi_id("ALU")(0), "ALU", i, width))
       }
     }
-  } else if (!hasNonAcc) { // no basic (non-acc) operation, only has acc operation
-    alu.io.in(0) := delayPipeCG.io.out(0)
-    alu.io.in(1) := dmr.io.out(1)
-    //    connections.append((smi_id("DMR")(0), "DMR", 1, smi_id("ALU")(0), "ALU", 0))
-    //@yuan: should keep consistent with DFG?
-    connections.append((smi_id("DelayPipeCG")(0), "DelayPipeCG", 0, smi_id("ALU")(0), "ALU", 0, width))
-  } else { // has both basic and acc operations
-    when(OpInfo.isnotAccOp(opc)) {
-      //      println("test")
-      alu.io.in(0) := delayPipeCG.io.out(0)
-      alu.io.in(1) := delayPipeCG.io.out(1)
-    }.otherwise {
-      alu.io.in(0) := dmr.io.out(1)
-      alu.io.in(1) := delayPipeCG.io.out(0)
+  } else if (!hasNonAcc) { // no basic (non-acc) operation, only has acc operation      
+      if(hasMAC){
+        when(OpInfo.isMACop(opc)) { // mac operation
+          alu.io.in(0) := delayPipeCG.io.out(0)
+          alu.io.in(1) := delayPipeCG.io.out(1)
+          alu.io.in(2) := dmr.io.out(1)
+        }.otherwise{// normal acc operation
+          alu.io.in(0) := delayPipeCG.io.out(0)
+          alu.io.in(1) := dmr.io.out(1)
+          alu.io.in(2) := DontCare
+        }
+        alu.io.in.zipWithIndex.foreach { case (in, i) =>
+          if (i < numOperandCG) {
+            connections.append((smi_id("DelayPipeCG")(0), "DelayPipeCG", i, smi_id("ALU")(0), "ALU", i, width))
+          }
+        }      
+      }else{// no MAC operation, coarse-grained operands < 3
+        alu.io.in(0) := delayPipeCG.io.out(0)
+        alu.io.in(1) := dmr.io.out(1)
+        //@yuan: should keep consistent with DFG?
+        connections.append((smi_id("DelayPipeCG")(0), "DelayPipeCG", 0, smi_id("ALU")(0), "ALU", 0, width))
+      }
+  } else { // has both basic and acc operations    
+    if(hasMAC){
+      when(OpInfo.isnotAccOp(opc)) { // normal operation, using both the 2 operands
+        alu.io.in(0) := delayPipeCG.io.out(0)
+        alu.io.in(1) := delayPipeCG.io.out(1)
+      }.otherwise{
+        alu.io.in(0) := delayPipeCG.io.out(0)
+        alu.io.in(1) := dmr.io.out(1)
+      }
+      when(OpInfo.isMACop(opc)){ // MAC operation, the third operand is used as the feedback from DMR
+        alu.io.in(2) := dmr.io.out(1)
+      }.otherwise{
+        alu.io.in(2) := DontCare
+      }
+    }else {
+      when(OpInfo.isnotAccOp(opc)) {
+        //      println("test")
+        alu.io.in(0) := delayPipeCG.io.out(0)
+        alu.io.in(1) := delayPipeCG.io.out(1)
+      }.otherwise {
+        alu.io.in(0) := dmr.io.out(1)
+        alu.io.in(1) := delayPipeCG.io.out(0)
+      }
     }
     alu.io.in.zipWithIndex.foreach { case (in, i) =>
-      if(i < numOperandCG) {
+      if (i < numOperandCG) {
         connections.append((smi_id("DelayPipeCG")(0), "DelayPipeCG", i, smi_id("ALU")(0), "ALU", i, width))
       }
     }
@@ -333,8 +369,8 @@ class GPE(attrs: mutable.Map[String, Any]) extends Module with IR {
     offset = 0
     for(i <- 0 until numOperandFG){
       val num = numInPerFG(i)
-      println("numOperandFG: " + numOperandFG + " num: " + num + " numInFG: " + numInFG)
-      println("imuxsFG(i).in size: " + imuxsFG(i).in.size)
+      // println("numOperandFG: " + numOperandFG + " num: " + num + " numInFG: " + numInFG)
+      // println("imuxsFG(i).in size: " + imuxsFG(i).in.size)
       imuxsFG(i).in.zipWithIndex.foreach { case (in, j) =>
         if (j < 2) { // constant 0/1
           in := j.U
@@ -364,7 +400,7 @@ class GPE(attrs: mutable.Map[String, Any]) extends Module with IR {
       connections.append((smi_id("MuxnFG")(i), "MuxnFG", 0, smi_id("DelayPipeFG")(0), "DelayPipeFG", i, 1))
       if(noLUTOperandFG > 0){
         if(i == numACCOperandFG && aluOperandFG > 0){ // ALU has fine-grained input, idx start from the idx connect to DMR
-          alu.io.in(numOperandCG) := delayPipeFG.io.out(i)
+          alu.io.in(numOperandCG + extraALUInput) := delayPipeFG.io.out(i)
           connections.append((smi_id("DelayPipeFG")(0), "DelayPipeFG", i, smi_id("ALU")(0), "ALU", numOperandCG, 1))
         }else if( i >= noLUTOperandFG){ // connect to LUT
           lut.io.in(i-noLUTOperandFG) := delayPipeFG.io.out(i)

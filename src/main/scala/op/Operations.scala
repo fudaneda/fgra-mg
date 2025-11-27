@@ -76,7 +76,8 @@ val BasicOpInfoMap: Map[String, ListBuffer[Int]] = Map(
 	"MAX" -> ListBuffer(2, 1, 1, 1),
 	"AND" -> ListBuffer(2, 1, 1, 1),
 	"OR" -> ListBuffer(2, 1, 1, 1),
-	"XOR" -> ListBuffer(2, 1, 1, 1),
+	"XOR" -> ListBuffer(2, 1, 1, 1),	
+	"XNOR" -> ListBuffer(2, 1, 1, 1),
 	"SHL" -> ListBuffer(2, 1, 1, 0),
 	"LSHR" -> ListBuffer(2, 1, 1, 0),
 	"ASHR" -> ListBuffer(2, 1, 1, 0),
@@ -85,8 +86,12 @@ val BasicOpInfoMap: Map[String, ListBuffer[Int]] = Map(
 	"EQ" -> ListBuffer(2, 2, 1, 1),
 	"NE" -> ListBuffer(2, 2, 1, 1),
 	"ULT" -> ListBuffer(2, 2, 1, 0),
-	"ULE" -> ListBuffer(2, 2, 1, 0),
+	"ULE" -> ListBuffer(2, 2, 1, 0),	
+	"UGT" -> ListBuffer(2, 2, 1, 0),
+	"UGE" -> ListBuffer(2, 2, 1, 0),
 	"SLT" -> ListBuffer(2, 2, 1, 0),
+	"SGE" -> ListBuffer(2, 2, 1, 0),
+	"SGT" -> ListBuffer(2, 2, 1, 0),
 	"SLE" -> ListBuffer(2, 2, 1, 0),
 	"SEL" -> ListBuffer(3, 1, 1, 0),
 	"SEXT" -> ListBuffer(3, 1, 1, 0),
@@ -216,6 +221,14 @@ val CondDualInitAccOpInfoMap: Map[String, (ListBuffer[Int], String)] = Map(
 		val CondISelInfoMap: Map[String, (ListBuffer[Int], String)] = Map(
 			"CISEL" ->(ListBuffer(4, 1, 1, 0), "PASS"),
 		)
+			//@yuan: multiply-accumulation operation (MAC)
+	val MACInfoMap: Map[String, ListBuffer[Int]] = Map(
+		"MAC" -> ListBuffer(2, 1, 1, 1)
+	)
+	//@yuan: conditiinal multiply-accumulation operation (MAC)
+	val CMACInfoMap: Map[String, (ListBuffer[Int], String)] = Map(
+		"CMAC" -> (ListBuffer(3, 1, 1, 0), "MAC")
+	)
 
 	// OPName -> List(NumOperands, NumRes, Latency, Operands-Commutative, Accumulative-operation)
 	// latency including the register outside ALU
@@ -228,7 +241,8 @@ val CondDualInitAccOpInfoMap: Map[String, (ListBuffer[Int], String)] = Map(
 		ISelInfoMap.map{case (name, (info, basic)) => name -> (info :+ -1)} ++
 		CondISelInfoMap.map { case (name, (info, basic)) => name -> (info :+ -1) } ++
 		LSOpInfoMap.map { case (name, info) => name -> (info :+ 0) } ++
-		LUTOpInfoMap.map { case (name, info) => name -> (info :+ 0) }
+		LUTOpInfoMap.map { case (name, info) => name -> (info :+ 0) }++
+		MACInfoMap.map { case (name, info) => name -> (info :+ 0) }
 	}
 
 	def getOperandNum(op: String): Int = {
@@ -252,7 +266,11 @@ val CondDualInitAccOpInfoMap: Map[String, (ListBuffer[Int], String)] = Map(
 	}
 
 	def isAccumulative(op: String): Int = {
-		OpInfoMap(op)(4)
+		if(op == "MAC" || op == "CMAC"){
+			1
+		}else{
+			OpInfoMap(op)(4)
+		}
 	}
 
 	def isISelection(op: String): Int = {
@@ -300,7 +318,9 @@ val CondDualInitAccOpInfoMap: Map[String, (ListBuffer[Int], String)] = Map(
 			OpInfoMap(ISelInfoMap(op)._2)(0)
 		} else if (CondISelInfoMap.contains(op)) {
 			OpInfoMap(CondISelInfoMap(op)._2)(0)
-		} else {
+		} else if (CMACInfoMap.contains(op)) {
+			OpInfoMap(CMACInfoMap(op)._2)(0)
+		}else {
 			OpInfoMap(op)(0)
 		}
 	}
@@ -366,7 +386,8 @@ val CondDualInitAccOpInfoMap: Map[String, (ListBuffer[Int], String)] = Map(
 
 	def apply(ops: ListBuffer[String]): Unit = {
 		OPSet = ops
-		var hasAcc = false
+		var hasAcc = false		
+		var hasMAC = false
 		var hasCondAcc = false
 		var hasCondRstAcc = false
 		var hasInitSelection = false
@@ -413,15 +434,20 @@ val CondDualInitAccOpInfoMap: Map[String, (ListBuffer[Int], String)] = Map(
 				val newopc = ALUOpc.size
 				ALUOpc += (basicOp -> newopc)
 				OPCMap += (basicOp -> newopc)
+			}			
+			if (MACInfoMap.contains(op) || CMACInfoMap.contains(op)) {
+				hasMAC = true
 			}
 		}
 //		println("OPCMap: " + OPCMap)
 		LSOPCWidth = {
 			if (LSOpNum > 0) log2Ceil(LSOpNum) else 0
-		}
-		BasicOPCWidth = log2Ceil(ALUOpc.size)
+		}		
+		BasicOPCWidth = if(hasMAC) log2Ceil(ALUOpc.size + 1) else log2Ceil(ALUOpc.size)
 		ALUOPCWidth = BasicOPCWidth + {
-			if(hasCondDualRstAcc || hasInitSelection || hasCondInitSelection){
+			if(hasMAC){
+				4
+			}else if(hasCondDualRstAcc || hasInitSelection || hasCondInitSelection){
 				3
 			}else if (hasCondRstAcc || hasCondAcc) {
 				2
@@ -430,17 +456,16 @@ val CondDualInitAccOpInfoMap: Map[String, (ListBuffer[Int], String)] = Map(
 			} else {
 				0
 			}
-		}
-//		+ {
-//			if (hasCondRstAcc || hasCondAcc) {
-//				2
-//			} else if (hasAcc) {
-//				1
-//			} else {
-//				0
-//			}
-//		}
+		}		
 		// second traversal
+		ops.foreach { op =>
+			if (MACInfoMap.contains(op) || CMACInfoMap.contains(op)) {
+				val newopc = ALUOpc.size
+				ALUOpc += (op -> (newopc + (7 << BasicOPCWidth)))
+				OPCMap += (op -> (newopc + (7 << BasicOPCWidth)))
+			}
+		}
+		// third traversal
 		ops.foreach { op =>
 			if (AccOpInfoMap.contains(op)) {
 				val basicOp = AccOpInfoMap(op)._2
@@ -466,6 +491,10 @@ val CondDualInitAccOpInfoMap: Map[String, (ListBuffer[Int], String)] = Map(
 				val basicOp = CondISelInfoMap(op)._2
 				val newopc = ALUOpc(basicOp) + (6 << BasicOPCWidth)
 				OPCMap += (op -> newopc)
+			} else if (CMACInfoMap.contains(op)) {
+				val basicOp = op
+				val newopc = ALUOpc(basicOp) + (8 << BasicOPCWidth)
+				OPCMap += (op -> newopc)
 			}
 		}
 	}
@@ -473,6 +502,10 @@ val CondDualInitAccOpInfoMap: Map[String, (ListBuffer[Int], String)] = Map(
 
 	def isnotAccOp(op: UInt): Bool = {
 		op(ALUOPCWidth - 1, BasicOPCWidth) <= 0.U || op(ALUOPCWidth - 1, BasicOPCWidth) >= 5.U
+	}
+
+	def isMACop(op: UInt): Bool = {
+		op(ALUOPCWidth - 1, BasicOPCWidth) >= 7.U
 	}
 
 	def isDualInitAccOp(op: UInt): Bool = {
@@ -492,15 +525,27 @@ val CondDualInitAccOpInfoMap: Map[String, (ListBuffer[Int], String)] = Map(
 //	}
 
 	def getAccMode(op: UInt): UInt = {
-		op(ALUOPCWidth - 1, BasicOPCWidth)
+		val mode = Wire(UInt((ALUOPCWidth - BasicOPCWidth).W))
+		when(op(ALUOPCWidth - 1, BasicOPCWidth) >= 7.U){
+			mode := 1.U
+		}.otherwise{
+			mode := op(ALUOPCWidth - 1, BasicOPCWidth)
+		}
+		mode
 	}
-	def OpFuncs(ops: Seq[UInt]): Map[String, Seq[UInt]] = {
+		def OpFuncs(ops: Seq[UInt], hasMAC: Boolean): Map[String, Seq[UInt]] = {
 		//		def OpFuncs(ops: Seq[UInt], opc: UInt, opset: ListBuffer[OPC]) : Map[String, Seq[UInt]] = {
 		//		val op_names = opset.map(_.toString)
 		val op0 = ops.head(high, 0)
 		val op1 = ops(1)(high, 0)
 		val op2 = {
-			if (ops.size > 2) ops(2)(0)
+			if (ops.size > 3) ops(2)(high, 0) // op2 is used as feedback
+			else if(ops.size == 3 && hasMAC) ops(2)(high, 0)
+			else 0.U(1.W)
+		}
+		val op3 = {
+			if (ops.size > 3) ops(3)(0)
+			else if(ops.size == 3 && !hasMAC) ops(2)(0)
 			else 0.U(1.W)
 		}
 		val udiv = Module(new Div(width, false, DIV_LATENCY - 1))
@@ -509,6 +554,12 @@ val CondDualInitAccOpInfoMap: Map[String, (ListBuffer[Int], String)] = Map(
 		udiv.io.op1 := DontCare
 		sdiv.io.op0 := DontCare
 		sdiv.io.op1 := DontCare
+
+		val multipler = Module(new Mul(width))
+		multipler.io.op0 := op0
+		multipler.io.op1 := op1
+
+		// println("op size: " + ops.size)
 		//		val op1_inv = (~op1).asUInt
 		//		val op1_new = Wire(UInt(width.W))
 		//		val op2_new = Wire(UInt(1.W))
@@ -534,9 +585,20 @@ val CondDualInitAccOpInfoMap: Map[String, (ListBuffer[Int], String)] = Map(
 
 		Map(
 			"PASS" -> Seq(op0),
-			"ADD" -> Seq(op0 + op1),
+			"ADD" -> {
+				val adder = Module(new Add(width))
+				adder.io.op0 := op0
+				adder.io.op1 := op1
+				Seq(adder.io.res)
+			},
 			"SUB" -> Seq(op0 - op1),
-			"MUL" -> Seq(op0 * op1),
+			"MUL" -> Seq(multipler.io.res),
+			"MAC" -> {
+				val adder_mac = Module(new Add(width))
+				adder_mac.io.op0 := multipler.io.res
+				adder_mac.io.op1 := op2
+				Seq(adder_mac.io.res)
+			},
 			"UDIV" -> {
 				udiv.io.op0 := op0
 				udiv.io.op1 := op1
@@ -551,6 +613,7 @@ val CondDualInitAccOpInfoMap: Map[String, (ListBuffer[Int], String)] = Map(
 			"MIN" -> Seq(Mux(op0 < op1, op0, op1)),
 			"MAX" -> Seq(Mux(op0 > op1, op0, op1)),
 			"AND" -> Seq(op0 & op1),
+			"XNOR" -> Seq(~(op0 ^ op1)),
 			"OR" -> Seq(op0 | op1),
 			"NOT" -> Seq(~op0),
 			"XOR" -> Seq(op0 ^ op1),
@@ -566,6 +629,14 @@ val CondDualInitAccOpInfoMap: Map[String, (ListBuffer[Int], String)] = Map(
 				val res1 = (op0 >> shn).asUInt
 				val res2 = (op0 << (width.U - shn)).asUInt
 				Seq(res1 | res2)
+			},
+			"UGE" -> { // unsigned greater than or equal
+				val res = op0 >= op1
+				Seq(res, res)
+			},
+			"UGT" -> { // unsigned greater than
+				val res = op0 > op1
+				Seq(res, res)
 			},
 			"EQ" -> {
 				val res = op0 === op1
@@ -591,16 +662,24 @@ val CondDualInitAccOpInfoMap: Map[String, (ListBuffer[Int], String)] = Map(
 				val res = op0.asSInt <= op1.asSInt
 				Seq(res, res)
 			},
+			"SGE" -> {
+				val res = op0.asSInt >= op1.asSInt
+				Seq(res, res)
+			},
+			"SGT" -> {
+				val res = op0.asSInt > op1.asSInt
+				Seq(res, res)
+			},
 			"SEL" -> {
-				Seq(Mux(op2.asBool, op0, op1))
+				Seq(Mux(op3.asBool, op0, op1))
 					//Seq(Mux(op2.asBool, op1, op0))//@yuan: modify to pass the ldpc test
 				},
 				"SEXT" -> {
-					val res = Cat(Fill(high, op2),op2)
+					val res = Cat(Fill(high, op3),op3)
 					Seq(res, res) //@yuan: signed extension
 				},
 				"ZEXT" -> {
-					val res = Cat(Fill(high, 0.U), op2)
+					val res = Cat(Fill(high, 0.U), op3)
 					Seq(res, res) //@yuan: signed extension
 				},
 			  "PASS_CF" -> {

@@ -29,7 +29,7 @@ class LoadController(spadAddrWidth: Int, spadAddrNum: Int, lgMaxPartitionSize: I
   })
 
   // decouple the DMA requests with the data streams
-  class SpadReq(spadAddrWidth: Int, spadAddrNum: Int, lgMaxDataLen: Int, idWidth: Int) extends Bundle{
+  class SpadReq(spadAddrWidth: Int, spadAddrNum: Int, lgMaxDataLen: Int, idWidth: Int, biasWidth: Int) extends Bundle{
     val addrs = Vec(spadAddrNum, UInt(spadAddrWidth.W))   // start addresses
     val num = UInt(log2Ceil(spadAddrNum).W) // used address number - 1
     val len = UInt(lgMaxDataLen.W)
@@ -37,9 +37,11 @@ class LoadController(spadAddrWidth: Int, spadAddrNum: Int, lgMaxPartitionSize: I
     val lgPartitionSize = UInt(2.W) // @yuan: the log2(partition size), for now, the maximum partition size should less than 8 (3)
     val lgPartitionBlockSize = UInt(4.W) // @yuan: the log2(partition block size), i.e. log2(B)
     val offsetId = Vec(spadAddrNum, UInt(lgMaxPartitionSize.W)) //@yuan: partitioned memory id, that is, offset against the base bank
+    val bias_element_num = UInt(biasWidth.W)
+    val spad_required_len = UInt(lgMaxDataLen.W)//@yuan: the required length for SPM
 //    val mode = UInt(1.W)//@yuan: the mode of memory partition
   }
-  val spadReqQue = Module(new Queue(new SpadReq(spadAddrWidth, spadAddrNum, lgMaxDataLen, idWidth), reqQueDepth))
+  val spadReqQue = Module(new Queue(new SpadReq(spadAddrWidth, spadAddrNum, lgMaxDataLen, idWidth, log2Ceil(dataWidth/fgradataWidth)), reqQueDepth))
 
   val dataByte = dataWidth/8
   val s_idle :: s_dma_req :: Nil = Enum(2)
@@ -63,7 +65,8 @@ class LoadController(spadAddrWidth: Int, spadAddrNum: Int, lgMaxPartitionSize: I
 
   //@yuan: adopted design from @Mion, which can fix the data bias in transmission
   val real_request_len = RegInit(0.U(lgMaxDataLen.W)) // total data length for dma request
-  val bias_element_num = rs1.remote_addr(log2Ceil(dataWidth/8) - 1, log2Ceil(fgradataWidth/8))
+  val spad_needed_len = RegInit(0.U(lgMaxDataLen.W)) // total data length for spad 
+  val bias_element_num = RegInit(0.U(log2Ceil(dataWidth/fgradataWidth).W))
 
   assert(spadAddrNum > 1, "fused address number should >1")
   switch(state){
@@ -75,12 +78,14 @@ class LoadController(spadAddrWidth: Int, spadAddrNum: Int, lgMaxPartitionSize: I
 //        partitionMode := rs2.partition_mode
         lgPartitionSize := rs2.lgPartitionSize
         lgPartitionBlockSize := rs2.lgPartitionBlockSize
-        // total_len := rs2.total_len
+        spad_needed_len := rs2.total_len
+        //@yuan: real length depends on the bias
         real_request_len := Mux(bias_element_num === 0.U, rs2.total_len, rs2.total_len + dataByte.U) 
+        bias_element_num := rs1.remote_addr(log2Ceil(dataWidth/8) - 1, log2Ceil(fgradataWidth/8))
+        // next_bias_element_num_buffer := bias_element_num // @Mion Lou add
         fused := rs2.fused.asBool
         status := io.core.req.bits.cmd.status
         id := io.core.req.bits.id
-        // when(!rs2.fused.asBool || addr_num === (spadAddrNum-1).U || true.B){
         when(!rs2.fused.asBool || addr_num === (spadAddrNum-1).U){
           state := s_dma_req
         }.otherwise{
@@ -108,20 +113,27 @@ class LoadController(spadAddrWidth: Int, spadAddrNum: Int, lgMaxPartitionSize: I
   spadReqQue.io.enq.valid := (state === s_dma_req) && io.dma.req.ready
   spadReqQue.io.enq.bits.addrs := spad_addrs
   spadReqQue.io.enq.bits.num := addr_num
-//  spadReqQue.io.enq.bits.mode := partitionMode
+  spadReqQue.io.enq.bits.bias_element_num := bias_element_num
   spadReqQue.io.enq.bits.len := real_request_len
+  spadReqQue.io.enq.bits.spad_required_len := spad_needed_len
   spadReqQue.io.enq.bits.id := id
   spadReqQue.io.enq.bits.lgPartitionSize := lgPartitionSize
   spadReqQue.io.enq.bits.lgPartitionBlockSize := lgPartitionBlockSize
   spadReqQue.io.enq.bits.offsetId := bank_offsets
 
   // Data streams
-  val s_spad_req :: s_spad_stream :: s_exp :: s_pre_resp :: s_resp :: Nil = Enum(5)
+  val s_spad_req :: s_spad_pre ::s_spad_stream :: s_exp :: s_pre_resp :: s_resp :: Nil = Enum(6)
   val spadState = RegInit(s_spad_req)
   val leftLen = RegInit(0.U(lgMaxDataLen.W)) // left data length
   val spadReqId = RegInit(0.U(idWidth.W))
   val success = RegInit(true.B)
   val leftNum = RegInit(0.U(log2Ceil(spadAddrNum).W))
+  val bias_num = RegInit(0.U(log2Ceil(dataWidth/fgradataWidth).W))
+
+  //@yuan: two registers to cache the coming data from DMA
+  val elements_buffer = RegInit(0.U((dataWidth).W))
+  val elements_queue_shift = Wire(UInt((2 * dataWidth).W))
+  elements_queue_shift := (Cat(io.dma.stream.bits.data, elements_buffer)  >> Mux(bias_num === 0.U, dataWidth.U, Cat(bias_num, 0.U(log2Ceil(fgradataWidth).W)))) // address space grows upwards  
 
   switch(spadState){
     is(s_spad_req){
@@ -130,11 +142,20 @@ class LoadController(spadAddrWidth: Int, spadAddrNum: Int, lgMaxPartitionSize: I
         leftNum := spadReqQue.io.deq.bits.num
         spadReqId := spadReqQue.io.deq.bits.id
         success := true.B
+        bias_num := spadReqQue.io.deq.bits.bias_element_num
         when(spadReqQue.io.deq.bits.num > 0.U){ // generate (n-1) responses in advance
           spadState := s_pre_resp
         }.otherwise{
-          spadState := s_spad_stream
+          // spadState := s_spad_stream
+          spadState := s_spad_pre
         }
+      }
+    }
+    is(s_spad_pre){
+      when(io.dma.stream.fire){
+        leftLen := leftLen - dataByte.U
+        elements_buffer := io.dma.stream.bits.data
+        spadState := s_spad_stream
       }
     }
     is(s_spad_stream){
@@ -143,6 +164,7 @@ class LoadController(spadAddrWidth: Int, spadAddrNum: Int, lgMaxPartitionSize: I
         success := false.B
       }.elsewhen(io.dma.stream.fire){
         leftLen := leftLen - dataByte.U
+        elements_buffer := io.dma.stream.bits.data
         spadState := Mux(leftLen <= dataByte.U, s_resp, s_spad_stream)
       }
     }
@@ -155,7 +177,8 @@ class LoadController(spadAddrWidth: Int, spadAddrNum: Int, lgMaxPartitionSize: I
       when(io.core.resp.fire){
         leftNum := leftNum - 1.U
         when(leftNum === 1.U){
-          spadState := s_spad_stream
+          // spadState := s_spad_stream
+          spadState := s_spad_pre
         }
       }
     }
@@ -172,7 +195,7 @@ class LoadController(spadAddrWidth: Int, spadAddrNum: Int, lgMaxPartitionSize: I
   io.spad.req.valid := (spadState === s_spad_req) && spadReqQue.io.deq.valid
   io.spad.req.bits.addrs := spadReqQue.io.deq.bits.addrs
   io.spad.req.bits.num := spadReqQue.io.deq.bits.num
-  io.spad.req.bits.len := spadReqQue.io.deq.bits.len
+  io.spad.req.bits.len := spadReqQue.io.deq.bits.spad_required_len
   io.spad.req.bits.id := spadReqQue.io.deq.bits.id
   io.spad.req.bits.lgPartitionSize := spadReqQue.io.deq.bits.lgPartitionSize
   io.spad.req.bits.lgPartitionBlockSize := spadReqQue.io.deq.bits.lgPartitionBlockSize
@@ -184,15 +207,22 @@ class LoadController(spadAddrWidth: Int, spadAddrNum: Int, lgMaxPartitionSize: I
   io.dma.exp.ack := io.spad.exp.ack
   // data stream
   if(streamQueDepth == 0){
-    io.dma.stream.ready := io.spad.stream.ready && (spadState === s_spad_stream)
-    io.spad.stream.valid := io.dma.stream.valid && (spadState === s_spad_stream)
-    io.spad.stream.bits := io.dma.stream.bits
+    io.dma.stream.ready := io.spad.stream.ready && (spadState === s_spad_stream || spadState === s_spad_pre )
+    io.spad.stream.valid := io.dma.stream.valid && (spadState === s_spad_stream || ((bias_num === 0.U) && spadState === s_spad_pre))
+    io.spad.stream.bits.mask := io.dma.stream.bits.mask
+    io.spad.stream.bits.id := io.dma.stream.bits.id
+    io.spad.stream.bits.last := io.dma.stream.bits.last
+    io.spad.stream.bits.data := elements_queue_shift
   }else{
     val que = Module(new Queue(new DMAStream(dataWidth, hasMask, idWidth), streamQueDepth,
       false, false, false, true))
-    io.dma.stream.ready := que.io.enq.ready && (spadState === s_spad_stream)
-    que.io.enq.valid := io.dma.stream.valid && (spadState === s_spad_stream)
-    que.io.enq.bits := io.dma.stream.bits
+    io.dma.stream.ready := que.io.enq.ready && (spadState === s_spad_stream || spadState === s_spad_pre )
+    que.io.enq.valid := io.dma.stream.valid && (spadState === s_spad_stream || ((bias_num === 0.U) && spadState === s_spad_pre))
+    que.io.enq.bits.mask := io.dma.stream.bits.mask
+    que.io.enq.bits.id := io.dma.stream.bits.id
+    que.io.enq.bits.last := io.dma.stream.bits.last
+    // que.io.enq.bits := io.dma.stream.bits
+    que.io.enq.bits.data := elements_queue_shift
     io.spad.stream <> que.io.deq
     que.io.flush.get := io.spad.exp.req
   }

@@ -80,7 +80,7 @@ class SRAMCoalesce(width: Int, lgDepth: Int, hasMask: Boolean, nBanks: Int, coal
   for(i <- 0 until nBanks by coalesceBanks){
     val coalBanks = coalesceBanks min (nBanks-i) // last group may have banks no more than coalesceBanks
     val group = Module(new SRAMBanksCoalesce(width, lgDepth, hasMask, coalBanks))
-    println("one coalesce!" + " coalbanks: " + coalBanks)
+    // println("one coalesce!" + " coalbanks: " + coalBanks)
     for(j <- 0 until coalBanks){
       group.io.orig(j) <> io.orig(i+j)
       group.io.coal(j) <> io.coal(i+j)

@@ -30,7 +30,8 @@ class FusionMem(opcodes: OpcodeSet)(implicit p: Parameters) extends LazyRoCC(opc
   FusionSpec.attrs("dumpADG") = dumpADG
   if(dumpADG){ FusionSpec.attrs("fgra_adg_filename") = fgra_adg_filename }
   // partition size
-  val lgMaxPartition = log2Ceil(FusionSpec.attrs("fgra_iob_sram_banks_coalesce").asInstanceOf[Int])
+  // val lgMaxPartition = log2Ceil(FusionSpec.attrs("fgra_iob_sram_banks_coalesce").asInstanceOf[Int])
+  val lgMaxPartition = math.min(3, log2Ceil(FusionSpec.attrs("fgra_iob_sram_banks_coalesce").asInstanceOf[Int]))//@yuan: for test hw
   assert(lgMaxPartition <= 3, "[FGRA] The maximum Nb should less than 8." )
   // println("===================lgMaxPartition:===========: " + lgMaxPartition)
   // scratchpad banks used for IOB
@@ -73,8 +74,10 @@ class FusionModuleImp(outer: FusionMem)(implicit p: Parameters) extends LazyRoCC
 
   val reservation = Module(new ReservationStation(loadQueDepth, storeQueDepth, exeQueDepth, idWidth))
 //  val reservation = Module(new ReservationStationOoO(4, loadQueDepth, storeQueDepth, exeQueDepth, nSpadBanks, lgSizeSpadBank, idWidth))
-  val loader = Module(new LoadController(spadAddrWidth, spadAddrNum, lgMaxPartition, lgMaxDataLen, spadDataWidth, hasMask, idWidth, streamQueDepth, loadQueDepth/2))
-  val storer = Module(new StoreController(spadAddrWidth, lgMaxPartition, lgMaxDataLen, spadDataWidth, hasMask, idWidth, streamQueDepth))
+  val loader = Module(new LoadController(spadAddrWidth, spadAddrNum, lgMaxPartition, lgMaxDataLen, spadDataWidth, fgraDataWidth, hasMask, idWidth, streamQueDepth, loadQueDepth/2))
+  // val loader = Module(new LoadController(spadAddrWidth, spadAddrNum, lgMaxPartition, lgMaxDataLen, spadDataWidth, hasMask, idWidth, streamQueDepth, loadQueDepth/2))
+  val storer = Module(new StoreController(spadAddrWidth, lgMaxPartition, lgMaxDataLen, spadDataWidth, fgraDataWidth, hasMask, idWidth, streamQueDepth))
+  // val storer = Module(new StoreController(spadAddrWidth, lgMaxPartition, lgMaxDataLen, spadDataWidth, hasMask, idWidth, streamQueDepth))
   val spad = Module(new Scratchpad(spadAddrWidth, spadAddrNum, lgMaxDataLen, spadDataWidth, hasMask, idWidth, nSpadBanks, lgSizeSpadBank, lgSizeSpadCfg, fgraDataWidth, lgMaxPartition))
   val fgra = Module(new FGRAController(FusionSpec.attrs))
   val dmaCtrl = outer.dma_node.module

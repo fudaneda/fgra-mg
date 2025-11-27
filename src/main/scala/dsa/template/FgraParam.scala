@@ -532,7 +532,7 @@ class FgraParam(attrs: mutable.Map[String, Any]){
 //  println(fggibsParam.size + " " + fg_rows+1)
   assert(fggibsParam.size == fg_rows+1)
   assert(fggibsParam.head.size == fg_columns+1)
-  println("fg_columns" + " " + fg_columns + "fg_rows: " + fg_rows)
+  // println("fg_columns" + " " + fg_columns + "fg_rows: " + fg_rows)
   for(i <- 0 to fg_rows) {
     val i_t = { if(i == 0) -1 else fgRows(i-1) } // top row of GPE
     val i_b = { if(i == fg_rows) -1 else fgRows(i) } // bottom row of GPE

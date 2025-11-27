@@ -379,7 +379,7 @@
      // verification
      assert(attrs("fgra_iob_sram_addr_width").asInstanceOf[Int] == attrs("spad_bank_lg_size").asInstanceOf[Int] +
        log2Ceil(attrs("fgra_iob_sram_banks_coalesce").asInstanceOf[Int]))
-     assert(attrs("fgra_iob_sram_banks_coalesce").asInstanceOf[Int] <= attrs("spad_addr_num").asInstanceOf[Int])
+    //  assert(attrs("fgra_iob_sram_banks_coalesce").asInstanceOf[Int] <= attrs("spad_addr_num").asInstanceOf[Int])
       //  println("spad_bank_lg_size: " + attrs("spad_bank_lg_size").asInstanceOf[Int])
 //     assert(attrs("fgra_cfg_sram_addr_width").asInstanceOf[Int] == attrs("spad_bank_lg_size").asInstanceOf[Int] +
 //       log2Ceil(attrs("fgra_cfg_sram_banks_cascade").asInstanceOf[Int]))

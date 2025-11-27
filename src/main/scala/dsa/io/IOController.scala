@@ -262,13 +262,13 @@ class IOController(dataWidth: Int, addrWidth: Int, hasMask: Boolean, mode: Int, 
       ren := realEn & isLoad
     }
     wdata := wData
-  }else{ // Load/Store
+  }else{ // Load/Store//@yuan: task_end only emerge with load/store and fine-grained inputs
     if(hasFGIn){
-      wen := Mux(useFGIn, realEn & (!isLoad) & io.in_fg(0), realEn & (!isLoad))
-      ren := Mux(useFGIn, realEn & isLoad & (io.in_fg(0) | first_en), realEn & isLoad)
+      wen := Mux(useFGIn, realEn & (!isLoad) & io.in_fg(0) & (!realTaskEnd), realEn & (!isLoad)& (!realTaskEnd))
+      ren := Mux(useFGIn, realEn & isLoad & (io.in_fg(0) | first_en) & (!realTaskEnd), realEn & isLoad& (!realTaskEnd))
     }else{
-      wen := realEn & (!isLoad) // & (iiCnt === 0.U)
-      ren := realEn & isLoad
+      wen := realEn & (!isLoad) & (!realTaskEnd) // & (iiCnt === 0.U)
+      ren := realEn & isLoad & (!realTaskEnd)
     }
     wdata := wData // 0: address, 1: data
   }

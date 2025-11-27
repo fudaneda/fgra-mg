@@ -162,7 +162,8 @@ class ReorderBuffer(dataWidth: Int, hasMask: Boolean, maxLgBurstSize: Int, nReqI
     buf_we := false.B
   }
   buffer.io.a.en := buf_we
-  buffer.io.a.we := {if(hasMask) io.streamin.bits.mask else buf_we.asUInt}
+  // buffer.io.a.we := {if(hasMask) io.streamin.bits.mask else buf_we.asUInt}
+  buffer.io.a.we := {if(hasMask) io.streamin.bits.mask else (buf_we && io.streamin.valid)}//@yuan: fixed bug
   buffer.io.a.din := io.streamin.bits.data
   val wrOffset = RegInit(0.U(offsetWidth.W))
   buffer.io.a.addr := Cat(io.streamin.bits.id, wrOffset)
@@ -341,12 +342,16 @@ class DMAReadImp(outer:DMAReadController)(lgMaxDataLen: Int, dataWidth: Int, has
     val s_idle :: s_slice :: s_wait :: s_tlb_req :: s_tlb_resp :: s_dma_req :: s_exp :: Nil = Enum(7)
     val state = RegInit(s_idle)
 
+    //@yuan: we should record the bias number, which is used to indicate whether the data is valid
+    val bias_element_num = RegInit(0.U(log2Ceil(dataWidth/8).W))
+
     io.read.req.ready := (state === s_idle)
     switch(state) {
       is(s_idle) {
         when(io.read.req.fire) {
           state := s_slice
           vaddr := io.read.req.bits.addr
+          bias_element_num := io.read.req.bits.addr(log2Ceil(dataWidth/8) - 1, 0)
           id := io.read.req.bits.id
           leftLen := io.read.req.bits.len
           status := io.read.req.bits.status
@@ -469,11 +474,13 @@ class DMAReadImp(outer:DMAReadController)(lgMaxDataLen: Int, dataWidth: Int, has
     packetInfoQue.io.enq.bits.exception := (state === s_exp)
 
     // DMA Stream
+    val addr = RegInit(0.U(maxLgSizeTL.W))
     val s_stream_idle :: s_stream_data :: s_stream_exp :: Nil = Enum(3)
     val streamState = RegInit(s_stream_idle)
     val min_pos = RegInit(0.U(maxLgSizeTL.W))
     val max_pos = RegInit(0.U(maxLgSizeTL.W))
     val cache_id = RegInit(0.U(idWidth.W))
+    // val isLastWithBias = RegInit(false.B)
     packetInfoQue.io.deq.ready := (streamState === s_stream_idle)
     switch(streamState){
       is(s_stream_idle){
@@ -485,7 +492,9 @@ class DMAReadImp(outer:DMAReadController)(lgMaxDataLen: Int, dataWidth: Int, has
         }
       }
       is(s_stream_data){
-        when(reorderBuffer.io.streamout.fire && reorderBuffer.io.streamout.bits.last) {
+        when(reorderBuffer.io.streamout.fire && (reorderBuffer.io.streamout.bits.last)) {
+        // when(reorderBuffer.io.streamout.fire && (reorderBuffer.io.streamout.bits.last || ((RegNext(leftLen) - dataByte.U).asSInt <= 0.S))) {
+        // when(reorderBuffer.io.streamout.fire && (reorderBuffer.io.streamout.bits.last || (Mux(bias_element_num === 0.U, false.B, (addr + bias_element_num) >= leftLen)))) {//@yuan: for transmission with bias, the last few data may not assert the last signal
           streamState := s_stream_idle
         }
       }
@@ -499,16 +508,22 @@ class DMAReadImp(outer:DMAReadController)(lgMaxDataLen: Int, dataWidth: Int, has
     // DMA exception
     io.read.exp.req := (streamState === s_stream_exp)
     io.read.exp.id := cache_id
-    // DMA Stream
-    val addr = RegInit(0.U(maxLgSizeTL.W))
+
     when(streamState === s_stream_idle) {
       addr := 0.U
     }.elsewhen(streamState === s_stream_data && reorderBuffer.io.streamout.fire) {
       addr := addr + dataByte.U
     }
+
     // over-fetched data is invalid, not transferred on the stream interface
-    val isOverSize = (min_pos > 0.U) && (min_pos < dataByte.U) && (addr < min_pos)
-    val isDataInvalid = ((addr < min_pos) && (!isOverSize)) || (addr >= max_pos) //@yuan: there may still part of data is valid
+    val isOverSize = (min_pos > 0.U) && (addr < min_pos) && ((addr + dataByte.U) > min_pos)
+    //@yuan: at the end the of last transaction, some data is still invalid
+    val isLastOversize = (max_pos < maxSizeTL.U) && (addr +& bias_element_num > max_pos)
+    val isDataInvalid = ((addr < min_pos) && (!isOverSize)) || (addr >= max_pos) || (isLastOversize) //@yuan: there may still part of data is valid
+    // isLastWithBias := (RegNext(leftLen) - dataByte.U) <= 0.U
+    // isLastWithBias := Mux(bias_element_num === 0.U, false.B, (addr +& bias_element_num) >= leftLen.asUInt)
+    // val add_sum = addr +& bias_element_num
+    // isLastWithBias := Mux(bias_element_num === 0.U, false.B, add_sum >= leftLen)
     reorderBuffer.io.streamout.ready := (streamState === s_stream_data) && (io.read.stream.ready || isDataInvalid)
     io.read.stream.valid := (streamState === s_stream_data) && reorderBuffer.io.streamout.valid && (!isDataInvalid)
     io.read.stream.bits.data := reorderBuffer.io.streamout.bits.data
@@ -533,7 +548,9 @@ class DMAWriteController(lgMaxDataLen: Int, dataWidth: Int, hasMask: Boolean, id
     sourceId = IdRange(0, nReqInflight) // [0, n) support n requests inflight
 //    requestFifo = true // responses in FIFO order, i.e. in same order the corresponding requests were sent ()
   )))))  
-  lazy val module = new DMAWriteImp(this)(lgMaxDataLen, dataWidth, hasMask, idWidth, nReqInflight, maxLgSizeTL)(p)
+  //@yuan: for transmission with bias, it must have mask
+  // lazy val module = new DMAWriteImp(this)(lgMaxDataLen, dataWidth, hasMask, idWidth, nReqInflight, maxLgSizeTL)(p)
+  lazy val module = new DMAWriteImp(this)(lgMaxDataLen, dataWidth, true, idWidth, nReqInflight, maxLgSizeTL)(p)
 }
 
 
@@ -545,6 +562,8 @@ class DMAWriteImp(outer:DMAWriteController)(lgMaxDataLen: Int, dataWidth: Int, h
       val write = new DMAStreamWriteIF(lgMaxDataLen, dataWidth, hasMask, idWidth)
       val tlb = Flipped(new MPTLBIO(maxLgSizeTL))
     })
+    // println("dma write has mask: " + hasMask)
+    // System.exit(0)
     val dataByte = dataWidth / 8
     val vaddr = RegInit(0.U(vaddrBitsExtended.W))
     val paddr = RegInit(0.U(paddrBits.W))
@@ -606,12 +625,16 @@ class DMAWriteImp(outer:DMAWriteController)(lgMaxDataLen: Int, dataWidth: Int, h
     // DMA Request/Response Table
     val table = RegInit(VecInit(Seq.fill(nReqInflight){true.B}))
 
+    //@yuan: we should record the bias number, which is used to indicate whether the data is valid
+    val bias_element_num = RegInit(0.U(log2Ceil(dataWidth/8).W))
+
     io.write.req.ready := (state === s_idle)
     switch(state) {
       is(s_idle) {
         when(io.write.req.fire) {
           state := s_slice
           vaddr := io.write.req.bits.addr
+          bias_element_num := io.write.req.bits.addr(log2Ceil(dataWidth/8) - 1, 0)
           id := io.write.req.bits.id
           leftLen := io.write.req.bits.len
           status := io.write.req.bits.status
@@ -681,48 +704,60 @@ class DMAWriteImp(outer:DMAWriteController)(lgMaxDataLen: Int, dataWidth: Int, h
       addr := addr + dataByte.U
     }
     // over-fetched data is invalid, not transferred on the stream interface
-    val isDataInvalid = (addr < vxo) || (addr >= vxo + leftLen)
-    io.write.stream.ready := (state === s_dma_req) && tl.a.ready && (!isDataInvalid)
-
+    // val isDataInvalid = (addr < vxo) || (addr >= vxo + leftLen)
+    //@yuan: there are still some part of data is valid, when bias > 0
+    val addr_sum = Wire(UInt((maxLgSizeTL + 1).W))
+    // addr_sum := addr + bias_element_num
+    addr_sum := (addr +& bias_element_num)
+    val vxo_ext = Cat(0.U(1.W), vxo)
+    val isDataInvalid = ( addr_sum < vxo_ext) || (addr >= vxo + leftLen)
+    // val isDataInvalid = (Mux(bias_element_num === 0.U, addr < vxo, addr + bias_element_num <= vxo)) || (addr >= vxo + leftLen)
+    io.write.stream.ready := (state === s_dma_req) && tl.a.ready && (!isDataInvalid)//@yuan: for bias
+    // io.write.stream.ready := (state === s_dma_req) && tl.a.ready && (!isDataInvalid || bias_element_num =/= 0.U)
     when(edge.done(tl.a)){
       tl_id := Mux(tl_id < (nReqInflight-1).U, tl_id + 1.U, 0.U )
     }
-    // Generate a byte mask aligned to the TL address low bits.
-    // For sizes >= beatBytes, the mask should be full; for narrower writes,
-    // shift the base mask by the address offset within the beat.
-    val baseMask = Mux(
-      lgLen_align >= log2Ceil(dataByte).U,
-      ((1 << dataByte) - 1).U,
-      (1.U << (1.U << lgLen_align).asUInt).asUInt - 1.U
-    )
-    val mask = Wire(UInt(dataByte.W))
-    if (dataByte == 1) {
-      mask := baseMask(0, 0)
-    } else {
-      val addrShift = paddr(log2Ceil(dataByte) - 1, 0)
-      mask := (baseMask << addrShift)(dataByte - 1, 0)
-    }
+    val mask = RegInit(0.U(dataByte.W))
+    mask := Mux(lgLen_align >= log2Ceil(dataByte).U, ((1 << dataByte) - 1).U,
+                (1.U << (1.U << lgLen_align).asUInt).asUInt - 1.U)
     tl.a.valid := (state === s_dma_req) && (io.write.stream.valid || isDataInvalid)
     tl.a.bits := edge.Put(
       fromSource = tl_id,
       toAddress = paddr,
       lgSize = lgLen_align,
       data = io.write.stream.bits.data,
-      mask = Mux(isDataInvalid, 0.U, mask)
+      mask = Mux(isDataInvalid, 0.U, io.write.stream.bits.mask)
+      // mask = Mux(isDataInvalid, io.write.stream.bits.mask, mask)
     )._2
     //DMA response
     tl.d.ready := true.B
 //    tl.d.ready := (state === s_dma_resp)
+    // DMA Request/Response Table
+    
+    // @yuan: fixed bug; pending the response
+////// @jhlou 20250525 : fix bug:
+    //////   Some implementations may allow for the early return of D channel responses under certain conditions. For instance, in some efficient cache or storage systems, if a request has been processed and the corresponding data is available, 
+    //////   a response may be returned immediately. 
+    ////// 
+    ////// 
+    val pendingRelease = RegInit(VecInit(Seq.fill(nReqInflight)(false.B)))
 
+    when (tl.d.fire) {
+      pendingRelease(tl.d.bits.source) := true.B
+    }
     // DMA Request/Response Table
     table.zipWithIndex.foreach{ case (t, i) =>
       when(edge.done(tl.a) && tl_id === i.U){ // request
         t := false.B // unavailable, wait for response
-      }.elsewhen(tl.d.fire && tl.d.bits.source === i.U){
-        t := true.B // available
+      // }.elsewhen(pendingRelease(i)) {
+      }.elsewhen(pendingRelease(i) & (state =/= s_dma_req | tl_id  =/= i.U)) { 
+        //// @jhlou : // If tl.d is valid before tl.a is completed, do not set the table to high.     
+        t := true.B
+        pendingRelease(i) := false.B
       }
     }
 }
+
 
 
 /** DMA controller, read/write data from/to remote memory with virtual address
@@ -758,7 +793,8 @@ class DMAImp(outer: DMAController)(id_node: TLIdentityNode,dma_reader: DMAReadCo
     val nTLBs = if (useSharedTLB) 1 else 2
     val io = IO(new Bundle {
       val read = new DMAStreamReadIF(lgMaxDataLen, dataWidth, hasMask, idWidth)
-      val write = new DMAStreamWriteIF(lgMaxDataLen, dataWidth, hasMask, idWidth)
+      // val write = new DMAStreamWriteIF(lgMaxDataLen, dataWidth, hasMask, idWidth)
+      val write = new DMAStreamWriteIF(lgMaxDataLen, dataWidth, true, idWidth)
       val ptw = Vec(nTLBs, new TLBPTWIO)
       val exp = Vec(nTLBs, new TLBExceptionIO)
     })
